@@ -271,7 +271,7 @@ class Two_Factor_Core {
 	/**
 	 * Used for front-end shortcode
 	 */
-	public function user_two_factor_process_update() {
+	public static function user_two_factor_process_update() {
 		if ( is_user_logged_in() && isset( $_POST['_two_factor_shortcode'] ) && isset( $_POST['_nonce_user_two_factor_options'] ) ) {
 			self::user_two_factor_options_update( get_current_user_id() );
 		}
@@ -789,7 +789,7 @@ class Two_Factor_Core {
 		<?php
 	}
 
-	protected function user_two_factor_providers_table( $user ) {
+	protected static function user_two_factor_providers_table( $user ) {
 		// Ensure we can render things outside the WP admin.
 		require_once ABSPATH . 'wp-admin/includes/admin.php';
 
