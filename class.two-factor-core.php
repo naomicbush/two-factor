@@ -37,6 +37,7 @@ class Two_Factor_Core {
 	public static function add_hooks() {
 		add_action( 'plugins_loaded', array( __CLASS__, 'load_textdomain' ) );
 		add_action( 'init', array( __CLASS__, 'get_providers' ) );
+		add_action( 'init', array( __CLASS__, 'user_two_factor_process_update' ), 11 );
 		add_action( 'wp_login', array( __CLASS__, 'wp_login' ), 10, 2 );
 		add_action( 'login_form_validate_2fa', array( __CLASS__, 'login_form_validate_2fa' ) );
 		add_action( 'login_form_backup_2fa', array( __CLASS__, 'backup_2fa' ) );
@@ -47,6 +48,8 @@ class Two_Factor_Core {
 		add_filter( 'manage_users_columns', array( __CLASS__, 'filter_manage_users_columns' ) );
 		add_filter( 'wpmu_users_columns', array( __CLASS__, 'filter_manage_users_columns' ) );
 		add_filter( 'manage_users_custom_column', array( __CLASS__, 'manage_users_custom_column' ), 10, 3 );
+
+		add_shortcode( 'two-factor-user-profile', array( __CLASS__, 'user_profile_shortcode' ) );
 
 		// Run only after the core wp_authenticate_username_password() check.
 		add_filter( 'authenticate', array( __CLASS__, 'filter_authenticate' ), 50 );
@@ -125,19 +128,17 @@ class Two_Factor_Core {
 	 * @param WP_User $user WP_User object of the logged-in user.
 	 * @return array
 	 */
-	public static function get_enabled_providers_for_user( $user = null ) {
-		if ( empty( $user ) || ! is_a( $user, 'WP_User' ) ) {
-			$user = wp_get_current_user();
-		}
+	public static function get_enabled_providers_for_user( $user_id ) {
+		$enabled_providers = get_user_meta( $user_id, self::ENABLED_PROVIDERS_USER_META_KEY, true );
 
-		$providers         = self::get_providers();
-		$enabled_providers = get_user_meta( $user->ID, self::ENABLED_PROVIDERS_USER_META_KEY, true );
-		if ( empty( $enabled_providers ) ) {
+		if ( ! is_array( $enabled_providers ) || empty( $enabled_providers ) ) {
 			$enabled_providers = array();
 		}
-		$enabled_providers = array_intersect( $enabled_providers, array_keys( $providers ) );
 
-		return $enabled_providers;
+		return array_intersect(
+			$enabled_providers,
+			array_keys( self::get_providers() )
+		);
 	}
 
 	/**
@@ -146,13 +147,9 @@ class Two_Factor_Core {
 	 * @param WP_User $user WP_User object of the logged-in user.
 	 * @return array
 	 */
-	public static function get_available_providers_for_user( $user = null ) {
-		if ( empty( $user ) || ! is_a( $user, 'WP_User' ) ) {
-			$user = wp_get_current_user();
-		}
-
+	public static function get_available_providers_for_user( $user ) {
 		$providers            = self::get_providers();
-		$enabled_providers    = self::get_enabled_providers_for_user( $user );
+		$enabled_providers = self::get_enabled_providers_for_user( $user->ID );
 		$configured_providers = array();
 
 		foreach ( $providers as $classname => $provider ) {
@@ -164,6 +161,26 @@ class Two_Factor_Core {
 		return $configured_providers;
 	}
 
+	protected static function user_set_enabled_providers( $user_id, $providers ) {
+		// Enable only the available providers.
+		$providers = array_intersect(
+			$providers,
+			array_keys( self::get_providers() )
+		);
+
+		return update_user_meta( $user_id, self::ENABLED_PROVIDERS_USER_META_KEY, $providers );
+	}
+
+	protected static function user_set_primary_provider( $user_id, $provider ) {
+		$providers_enabled = self::get_enabled_providers_for_user( $user_id );
+
+		if ( in_array( $provider, $providers_enabled, true ) ) {
+			return update_user_meta( $user_id, self::PROVIDER_USER_META_KEY, $provider );
+		}
+
+		return false;
+	}
+
 	/**
 	 * Gets the Two-Factor Auth provider for the specified|current user.
 	 *
@@ -172,13 +189,15 @@ class Two_Factor_Core {
 	 * @param int $user_id Optional. User ID. Default is 'null'.
 	 * @return object|null
 	 */
-	public static function get_primary_provider_for_user( $user_id = null ) {
-		if ( empty( $user_id ) || ! is_numeric( $user_id ) ) {
-			$user_id = get_current_user_id();
+	public static function get_primary_provider_for_user( $user_id ) {
+		$user = get_userdata( $user_id );
+
+		if ( ! isset( $user->ID ) ) {
+			return null;
 		}
 
 		$providers           = self::get_providers();
-		$available_providers = self::get_available_providers_for_user( get_userdata( $user_id ) );
+		$available_providers = self::get_available_providers_for_user( $user );
 
 		// If there's only one available provider, force that to be the primary.
 		if ( empty( $available_providers ) ) {
@@ -217,9 +236,45 @@ class Two_Factor_Core {
 	 * @param int $user_id Optional. User ID. Default is 'null'.
 	 * @return bool
 	 */
-	public static function is_user_using_two_factor( $user_id = null ) {
+	public static function is_user_using_two_factor( $user_id ) {
 		$provider = self::get_primary_provider_for_user( $user_id );
+
 		return ! empty( $provider );
+	}
+
+	/**
+	 * Render the user settings via shortcode.
+	 *
+	 * @param  array $args Shortcode arguments.
+	 *
+	 * @return void
+	 */
+	public static function user_profile_shortcode( $args ) {
+		// Only logged-in users can edit things.
+		if ( ! is_user_logged_in() ) {
+			return null;
+		}
+
+		$user = wp_get_current_user();
+
+		?>
+		<form method="post" class="two-factor-user-settings two-factor-user-settings-shortcode">
+            <input type="hidden" name="_two_factor_shortcode" value="1">
+			<?php
+			self::user_two_factor_providers_table( $user );
+			submit_button();
+			?>
+		</form>
+		<?php
+	}
+
+	/**
+	 * Used for front-end shortcode
+	 */
+	public function user_two_factor_process_update() {
+		if ( is_user_logged_in() && isset( $_POST['_two_factor_shortcode'] ) && isset( $_POST['_nonce_user_two_factor_options'] ) ) {
+			self::user_two_factor_options_update( get_current_user_id() );
+		}
 	}
 
 	/**
@@ -720,27 +775,38 @@ class Two_Factor_Core {
 	 * @param WP_User $user WP_User object of the logged-in user.
 	 */
 	public static function user_two_factor_options( $user ) {
-		wp_enqueue_style( 'user-edit-2fa', plugins_url( 'user-edit.css', __FILE__ ) );
+		?>
+        <table class="form-table">
+            <tr>
+                <th>
+					<?php esc_html_e( 'Two-Factor Options' ); ?>
+                </th>
+                <td>
+                    <?php self::user_two_factor_providers_table( $user ); ?>
+                </td>
+            </tr>
+        </table>
+		<?php
+	}
+
+	protected function user_two_factor_providers_table( $user ) {
+		// Ensure we can render things outside the WP admin.
+		require_once ABSPATH . 'wp-admin/includes/admin.php';
 
 		$enabled_providers = array_keys( self::get_available_providers_for_user( $user ) );
 		$primary_provider = self::get_primary_provider_for_user( $user->ID );
+		$primary_provider_key = null;
 
 		if ( ! empty( $primary_provider ) && is_object( $primary_provider ) ) {
 			$primary_provider_key = get_class( $primary_provider );
-		} else {
-			$primary_provider_key = null;
 		}
+
+		wp_enqueue_style( 'user-edit-2fa', plugins_url( 'user-edit.css', __FILE__ ) );
 
 		wp_nonce_field( 'user_two_factor_options', '_nonce_user_two_factor_options', false );
 
 		?>
 		<input type="hidden" name="<?php echo esc_attr( self::ENABLED_PROVIDERS_USER_META_KEY ); ?>[]" value="<?php /* Dummy input so $_POST value is passed when no providers are enabled. */ ?>" />
-		<table class="form-table" id="two-factor-options">
-			<tr>
-				<th>
-					<?php esc_html_e( 'Two-Factor Options', 'two-factor' ); ?>
-				</th>
-				<td>
 					<table class="two-factor-methods-table">
 						<thead>
 							<tr>
@@ -755,16 +821,16 @@ class Two_Factor_Core {
 								<th scope="row"><input type="checkbox" name="<?php echo esc_attr( self::ENABLED_PROVIDERS_USER_META_KEY ); ?>[]" value="<?php echo esc_attr( $class ); ?>" <?php checked( in_array( $class, $enabled_providers ) ); ?> /></th>
 								<th scope="row"><input type="radio" name="<?php echo esc_attr( self::PROVIDER_USER_META_KEY ); ?>" value="<?php echo esc_attr( $class ); ?>" <?php checked( $class, $primary_provider_key ); ?> /></th>
 								<td>
-									<?php $object->print_label(); ?>
-									<?php do_action( 'two-factor-user-options-' . $class, $user ); ?>
+						<p>
+							<strong><?php $object->print_label(); ?></strong>
+						</p>
+						<?php
+						$object->render_user_settings( $user );
+						do_action( 'two-factor-user-options-' . $class, $user );
+						?>
 								</td>
 							</tr>
 						<?php endforeach; ?>
-						</tbody>
-					</table>
-				</td>
-			</tr>
-		</table>
 		<?php
 		/**
 		 * Fires after the Two Factor methods table.
@@ -774,6 +840,10 @@ class Two_Factor_Core {
 		 * @since 0.1-dev
 		 */
 		do_action( 'show_user_security_settings', $user );
+			?>
+			</tbody>
+		</table>
+		<?php
 	}
 
 	/**
@@ -786,27 +856,15 @@ class Two_Factor_Core {
 	 * @param int $user_id User ID.
 	 */
 	public static function user_two_factor_options_update( $user_id ) {
-		if ( isset( $_POST['_nonce_user_two_factor_options'] ) ) {
+
 			check_admin_referer( 'user_two_factor_options', '_nonce_user_two_factor_options' );
 
-			if ( ! isset( $_POST[ self::ENABLED_PROVIDERS_USER_META_KEY ] ) ||
-					! is_array( $_POST[ self::ENABLED_PROVIDERS_USER_META_KEY ] ) ) {
-				return;
+		if ( isset( $_POST[ self::ENABLED_PROVIDERS_USER_META_KEY ] ) ) {
+			self::user_set_enabled_providers( $user_id, $_POST[ self::ENABLED_PROVIDERS_USER_META_KEY ] );
 			}
 
-			$providers = self::get_providers();
-
-			$enabled_providers = $_POST[ self::ENABLED_PROVIDERS_USER_META_KEY ];
-
-			// Enable only the available providers.
-			$enabled_providers = array_intersect( $enabled_providers, array_keys( $providers ) );
-			update_user_meta( $user_id, self::ENABLED_PROVIDERS_USER_META_KEY, $enabled_providers );
-
-			// Primary provider must be enabled.
-			$new_provider = isset( $_POST[ self::PROVIDER_USER_META_KEY ] ) ? $_POST[ self::PROVIDER_USER_META_KEY ] : '';
-			if ( ! empty( $new_provider ) && in_array( $new_provider, $enabled_providers, true ) ) {
-				update_user_meta( $user_id, self::PROVIDER_USER_META_KEY, $new_provider );
-			}
+		if ( isset( $_POST[ self::PROVIDER_USER_META_KEY ] ) ) {
+			self::user_set_primary_provider( $user_id, $_POST[ self::PROVIDER_USER_META_KEY ] );
 		}
 	}
 }

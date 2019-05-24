@@ -36,20 +36,10 @@ class Two_Factor_Totp extends Two_Factor_Provider {
 	 */
 	protected function __construct() {
 		add_action( 'two-factor-user-options-' . __CLASS__, array( $this, 'user_two_factor_options' ) );
-		add_action( 'personal_options_update',              array( $this, 'user_two_factor_options_update' ) );
-		add_action( 'edit_user_profile_update',             array( $this, 'user_two_factor_options_update' ) );
+		add_action( 'init', array( $this, 'save_user_settings_frontend' ), 11 );
+		add_action( 'personal_options_update',              array( $this, 'save_user_settings_backend' ) );
+		add_action( 'edit_user_profile_update',             array( $this, 'save_user_settings_backend' ) );
 		return parent::__construct();
-	}
-
-	/**
-	 * Ensures only one instance of this class exists in memory at any one time.
-	 */
-	public static function get_instance() {
-		static $instance;
-		if ( ! isset( $instance ) ) {
-			$instance = new self();
-		}
-		return $instance;
 	}
 
 	/**
@@ -114,16 +104,41 @@ class Two_Factor_Totp extends Two_Factor_Provider {
 		<?php
 	}
 
+	public function save_user_settings_frontend() {
+
+		if ( is_user_logged_in() && isset( $_POST['_two_factor_shortcode'] ) && isset( $_POST['_nonce_user_two_factor_options'] ) ) {
+
+		    self::save_user_settings( get_userdata( get_current_user_id() ) );
+
+		}
+
+    }
+
+	public function save_user_settings_backend( $user_id ) {
+
+		$user = get_userdata( $user_id );
+
+		if ( ! isset( $user->ID ) ) {
+
+		    return null;
+
+		}
+
+		$this->save_user_settings( $user );
+
+	}
+
 	/**
 	 * Save the options specified in `::user_two_factor_options()`
 	 *
-	 * @param integer $user_id The user ID whose options are being updated.
+	 * @param WP_User $user The user whose options are being updated.
 	 * @return false
 	 */
-	public function user_two_factor_options_update( $user_id ) {
+	public function save_user_settings( $user ) {
 		$notices = array();
 		$errors = array();
 
+		$user_id = $user->ID;
 		$current_key = $this->get_user_totp_key( $user_id );
 
 		if ( isset( $_POST['_nonce_user_two_factor_totp_options'] ) ) {

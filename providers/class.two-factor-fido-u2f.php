@@ -37,19 +37,11 @@ class Two_Factor_FIDO_U2F extends Two_Factor_Provider {
 	const U2F_ASSET_VERSION = '0.2.0';
 
 	/**
-	 * Ensures only one instance of this class exists in memory at any one time.
+	 * Instance of our admin interface.
 	 *
-	 * @return \Two_Factor_FIDO_U2F
+	 * @var Two_Factor_FIDO_U2F_Admin
 	 */
-	static function get_instance() {
-		static $instance;
-
-		if ( ! isset( $instance ) ) {
-			$instance = new self();
-		}
-
-		return $instance;
-	}
+	protected static $admin;
 
 	/**
 	 * Class constructor.
@@ -62,10 +54,13 @@ class Two_Factor_FIDO_U2F extends Two_Factor_Provider {
 		}
 
 		require_once( TWO_FACTOR_DIR . 'includes/Yubico/U2F.php' );
+		require_once( TWO_FACTOR_DIR . 'providers/class.two-factor-fido-u2f-admin-list-table.php' );
+		require_once( TWO_FACTOR_DIR . 'providers/class.two-factor-fido-u2f-admin.php' );
+
 		self::$u2f = new u2flib_server\U2F( self::get_u2f_app_id() );
 
-		require_once( TWO_FACTOR_DIR . 'providers/class.two-factor-fido-u2f-admin.php' );
-		Two_Factor_FIDO_U2F_Admin::add_hooks();
+		self::$admin = new Two_Factor_FIDO_U2F_Admin( $this );
+		self::$admin->add_hooks();
 
 		wp_register_script(
 			'fido-u2f-api',
@@ -83,9 +78,19 @@ class Two_Factor_FIDO_U2F extends Two_Factor_Provider {
 			true
 		);
 
-		add_action( 'two-factor-user-options-' . __CLASS__, array( $this, 'user_options' ) );
-
 		return parent::__construct();
+	}
+
+	public function render_user_settings( $user ) {
+		return self::$admin->show_user_profile( $user );
+	}
+
+	public function save_user_settings( $user ) {
+		// Process adding a key.
+		self::$admin->catch_submission( $user );
+
+		// Process deleting a key.
+		self::$admin->catch_delete_security_key( $user );
 	}
 
 	/**
@@ -218,21 +223,6 @@ class Two_Factor_FIDO_U2F extends Two_Factor_Provider {
 	 */
 	public function is_available_for_user( $user ) {
 		return (bool) self::get_security_keys( $user->ID );
-	}
-
-	/**
-	 * Inserts markup at the end of the user profile field for this provider.
-	 *
-	 * @since 0.1-dev
-	 *
-	 * @param WP_User $user WP_User object of the logged-in user.
-	 */
-	public function user_options( $user ) {
-		?>
-		<p>
-			<?php esc_html_e( 'Requires an HTTPS connection. Configure your security keys in the "Security Keys" section below.', 'two-factor' ); ?>
-		</p>
-		<?php
 	}
 
 	/**
